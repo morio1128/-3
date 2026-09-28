@@ -18,7 +18,7 @@ KW = [
     "時差・誤差補正 (DEC)",
 ]
 TH_LO, TH_HI = 0.75, 1.25  # 1.5bit Sub-ADC のしきい値
-LAST_LO, LAST_HI = 0.5, 1.5  # 最終段（MDACなし）のしきい値
+LAST_LO, LAST_HI = 0.5, 1.5  # 最終stage（MDACなし）のしきい値
 
 
 # ===================== 計算部 =====================
@@ -28,8 +28,8 @@ def weight(k, n):
 
 
 def run_adc(vin, n, off=0.0):
-    """1.5bit/段モデル。D=0,1,2。残差 Vres = 2*(Vin - D*Vref/4) = 2Vin - D
-    off: Sub-ADC比較器のオフセット[V]（全段のしきい値を同量ずらす）"""
+    """1.5bit/stageモデル。D=0,1,2。残差 Vres = 2*(Vin - D*Vref/4) = 2Vin - D
+    off: Sub-ADC比較器のオフセット[V]（全stageのしきい値を同量ずらす）"""
     v = min(max(vin, 0.0), VREF)
     rows, m = [], 0
     for k in range(1, n + 1):
@@ -92,9 +92,9 @@ def draw_block(n, focus):
         x = X0 + (k - 1) * (W + G)
         last = k == n
         txt = (
-            f"第{k}段\nサブADC + DAC\n-> 減算 -> 2倍 (MDAC)"
+            f"stage{k}\nサブADC + DAC\n-> 減算 -> 2倍 (MDAC)"
             if not last
-            else f"第{k}段\nサブADCのみ\n(最終段)"
+            else f"stage{k}\nサブADCのみ\n(最終stage)"
         )
         box(x, 2.4, W, 1.2, txt, pipe or (mdac and not last))
         if not last:
@@ -131,16 +131,16 @@ def view_overview(rows, code, n):
     st.subheader("全体構造")
     st.markdown(
         "サイドバーでキーワードを選ぶと、対応するブロックがハイライトされます。\n\n"
-        "1. **残差・MDAC**：各段が粗く判定し、その分を引いた**残差を2倍**して次段へ渡す。\n"
-        "2. **パイプライン処理**：各段のS/Hが値を保持し、**全段が別サンプルを同時に処理**する。\n"
-        "3. **時差・誤差補正 (DEC)**：段ごとに確定時刻が違うビットを**シフトレジスタで揃え**、"
+        "1. **残差・MDAC**：各stageが粗く判定し、その分を引いた**残差を2倍**して次stageへ渡す。\n"
+        "2. **パイプライン処理**：各stageのS/Hが値を保持し、**全stageが別サンプルを同時に処理**する。\n"
+        "3. **時差・誤差補正 (DEC)**：stageごとに確定時刻が違うビットを**シフトレジスタで揃え**、"
         "**1bitずらして加算**して比較器誤差を補正しながら1つのコードにする。"
     )
     df = (
         pd.DataFrame(rows)
         .rename(
             columns={
-                "stage": "段",
+                "stage": "stage",
                 "vin": "入力 Vin[V]",
                 "d": "判定 D",
                 "vdac": "DAC出力[V]",
@@ -148,11 +148,11 @@ def view_overview(rows, code, n):
                 "vres": "出力 Vout(残差×2)[V]",
             }
         )
-        .set_index("段")
+        .set_index("stage")
     )
     st.dataframe(df.round(3))
     st.caption(
-        "最終段はMDACを持たず、Sub-ADCの判定のみを出力します（Vout は NaN）。"
+        "最終stageはMDACを持たず、Sub-ADCの判定のみを出力します（Vout は NaN）。"
     )
 
 
@@ -166,7 +166,7 @@ def view_mdac(rows, n):
         "④ ×2増幅（Vout）",
     ]
     c1, c2 = st.columns(2)
-    k = c1.slider("解析するステージ（最終段はMDACなし）", 1, n - 1, 1)
+    k = c1.slider("解析するステージ（最終stageはMDACなし）", 1, n - 1, 1)
     step = c2.radio("計算ステップ", steps, horizontal=True)
     si = steps.index(step)
     s = rows[k - 1]
@@ -176,10 +176,10 @@ def view_mdac(rows, n):
         else "0.75 V ≤ Vin < 1.25 V" if s["d"] == 1 else "Vin ≥ 1.25 V"
     )
     msgs = [
-        f"① 入力：第 {k} 段の Vin = **{s['vin']:.3f} V**",
+        f"① 入力：stage {k} の Vin = **{s['vin']:.3f} V**",
         f"② Sub-ADC（しきい値 0.75 V / 1.25 V）：{cmp_txt} → **D{k} = {s['d']}**",
         f"③ DAC出力 = D × Vref/4 = {s['vdac']:.3f} V、減算：Vin − DAC = **{s['vsub']:.3f} V**（残差）",
-        f"④ MDACで2倍増幅：Vout = 2 × {s['vsub']:.3f} = **{s['vres']:.3f} V** → 次段のVinへ",
+        f"④ MDACで2倍増幅：Vout = 2 × {s['vsub']:.3f} = **{s['vres']:.3f} V** → 次stageのVinへ",
     ]
     for i in range(si):
         st.caption(msgs[i])
@@ -200,7 +200,7 @@ def view_mdac(rows, n):
         ylabel="電圧 [V]",
         xlim=(0, 2),
         ylim=(-0.1, 2.1),
-        title=f"第 {k} 段: 鋸歯状伝達特性 (残差プロット)",
+        title=f"stage {k} : 鋸歯状伝達特性 (残差プロット)",
     )
     a1.legend(fontsize=8, loc="upper left")
     a1.grid(alpha=0.3)
@@ -217,7 +217,7 @@ def view_mdac(rows, n):
     a2.set(
         ylim=(0, 2.2),
         ylabel="電圧 [V]",
-        title=f"第 {k} 段: 各ノードの電圧変化",
+        title=f"stage {k} : 各ノードの電圧変化",
     )
     a2.axhline(VREF, c="r", ls=":")
     st.pyplot(fig)
@@ -229,10 +229,10 @@ def view_mdac(rows, n):
     ax.bar(idx, vs, color=["orange" if i == k else "#90caf9" for i in idx])
     ax.axhline(VREF, c="r", ls=":")
     ax.set(
-        xlabel="ステージ (段)",
+        xlabel="stage",
         ylabel="出力電圧 Vout [V]",
         ylim=(0, 2.3),
-        title="各段の出力電圧（残差）",
+        title="各stageの出力電圧（残差）",
     )
     ax.set_xticks(idx)
     for i, v in zip(idx, vs):
@@ -240,7 +240,7 @@ def view_mdac(rows, n):
     st.pyplot(fig2)
     plt.close(fig2)
     st.caption(
-        "残差は常に 0 ～ Vref に収まるため、次段は同じ回路で同じ処理を繰り返せます。"
+        "残差は常に 0 ～ Vref に収まるため、次stageは同じ回路で同じ処理を繰り返せます。"
     )
 
 
@@ -265,7 +265,7 @@ def view_pipe(vin, n):
         }
         for k in range(1, n + 1):
             s = c - k + 1
-            row[f"第{k}段"] = (
+            row[f"stage{k}"] = (
                 f"サンプル{names[s-1]}: D{k}={res[s-1][k-1]['d']}"
                 if 1 <= s <= ns
                 else "—"
@@ -289,10 +289,10 @@ def view_pipe(vin, n):
     b.metric("スループット", "1 サンプル / クロック")
     c.metric("同時処理サンプル数", f"最大 {n}")
     st.markdown(
-        "- **レイテンシ**：入力されてから結果が出るまでの遅延。段数Nに比例し、**Nクロック**かかります。\n"
-        "- **スループット**：各段のS/H（レジスタ）が値を保持するので、全段が別サンプルを並列処理でき、"
+        "- **レイテンシ**：入力されてから結果が出るまでの遅延。stage数Nに比例し、**Nクロック**かかります。\n"
+        "- **スループット**：各stageのS/H（レジスタ）が値を保持するので、全stageが別サンプルを並列処理でき、"
         "**定常状態では毎クロック1サンプル**を出力できます。\n"
-        "- 段数を増やすと分解能は上がりますが、増えるのは**レイテンシだけ**でスループットは変わりません。"
+        "- stage数を増やすと分解能は上がりますが、増えるのは**レイテンシだけ**でスループットは変わりません。"
     )
 
 
@@ -301,10 +301,10 @@ def view_dec(vin, n):
     st.subheader("時差・誤差補正 (DEC)")
     c1, c2 = st.columns(2)
     t = c1.slider(
-        "クロック（サンプルAが第1段に入ってからの経過）", 1, n, n
+        "クロック（サンプルAがstage1に入ってからの経過）", 1, n, n
     )
     off = c2.slider(
-        "比較器オフセット [V]（全段のSub-ADCしきい値をずらす）",
+        "比較器オフセット [V]（全stageのSub-ADCしきい値をずらす）",
         -0.4,
         0.4,
         0.0,
@@ -314,7 +314,7 @@ def view_dec(vin, n):
     _, ideal, _ = run_adc(vin, n, 0.0)
 
     st.markdown(
-        "##### ① タイムアライメント（第 k 段のビットはクロック k で確定 → N−k クロック遅延）"
+        "##### ① タイムアライメント（stage k のビットはクロック k で確定 → N−k クロック遅延）"
     )
     cell = {}
     for k in range(1, n + 1):
@@ -336,7 +336,7 @@ def view_dec(vin, n):
         pd.DataFrame({
             "ビット": [f"D{k}" for k in range(1, n + 1)],
             "確定クロック": list(range(1, n + 1)),
-            "遅延段数(N-k)": [n - k for k in range(1, n + 1)],
+            "遅延stage数(N-k)": [n - k for k in range(1, n + 1)],
             "出力クロック": [n] * n,
         })
         .set_index("ビット")
@@ -344,7 +344,7 @@ def view_dec(vin, n):
     )
 
     st.markdown(
-        "##### ② DEC：各段の出力（D=0,1,2）を **1bitずつずらして加算**"
+        "##### ② DEC：各stageの出力（D=0,1,2）を **1bitずつずらして加算**"
     )
     if t < n:
         st.info(
@@ -364,8 +364,8 @@ def view_dec(vin, n):
         )
         st.code("\n".join(lines))
         st.caption(
-            "隣り合う段のビットが1bit重なって足される（冗長性）ことで、"
-            "前段の判定ミスを後段の残差が打ち消します。最下位2段は同じ重みです。"
+            "隣り合うstageのビットが1bit重なって足される（冗長性）ことで、"
+            "前stageの判定ミスを後stageの残差が打ち消します。最下位2stageは同じ重みです。"
         )
 
         lsb = VREF / 2**n
@@ -389,17 +389,17 @@ def view_dec(vin, n):
                 f"✅ オフセット {off:+.2f} V があっても、DEC後のコード {code} は理想値 {ideal} と"
                 "ほぼ一致（±1 LSB以内）。冗長性による誤差補正が働いています。"
             )
-            st.caption("※ 最終段のしきい値自体のずれにより、±1 LSB程度は残ります。")
+            st.caption("※ 最終stageのしきい値自体のずれにより、±1 LSB程度は残ります。")
         else:
             st.error(
                 f"❌ コード {code} が理想値 {ideal} から大きくずれました。"
-                "残差が次段の入力範囲を超え、補正可能範囲（目安 ±0.25 V ＝ Vref/8）を超えています。"
+                "残差が次stageの入力範囲を超え、補正可能範囲（目安 ±0.25 V ＝ Vref/8）を超えています。"
             )
 
     x = np.linspace(0, VREF, 800)
     fig, ax = plt.subplots(figsize=(6, 3.4))
     ax.plot(x, transfer(x, off), c="#1565c0")
-    ax.axhspan(0, VREF, color="green", alpha=0.08, label="次段の入力許容範囲")
+    ax.axhspan(0, VREF, color="green", alpha=0.08, label="次stageの入力許容範囲")
     for th in TH_LO + off, TH_HI + off:
         ax.axvline(th, c="r", ls=":", lw=1)
     ax.set(
@@ -414,14 +414,14 @@ def view_dec(vin, n):
     st.pyplot(fig)
     plt.close(fig)
     st.caption(
-        "しきい値がずれても残差は 0 ～ Vref に収まる間は、後段が正しく変換し直せます。"
+        "しきい値がずれても残差は 0 ～ Vref に収まる間は、後stageが正しく変換し直せます。"
         "ずれが大きくなって残差が緑の範囲外に出ると、補正できません。"
     )
 
 
 # ===================== メイン =====================
 st.title("🔧 パイプライン型AD変換器の動作原理")
-st.caption("高専4年 電気・電子・情報系向け ／ 1.5bit/段モデル")
+st.caption("高専4年 電気・電子・情報系向け ／ 1.5bit/stageモデル")
 
 with st.sidebar:
     st.header("フォーカス切替")
@@ -533,9 +533,9 @@ def _build_steps(rows, n, vin, code, raw):
             kind="V",
             edges=["sh_s1"],
             boxes=["sh", "s1"],
-            title="S/H → 第1段",
+            title="S/H → stage1",
             text=(
-                f"保持された **{rows[0]['vin']:.3f} V** が 第1段"
+                f"保持された **{rows[0]['vin']:.3f} V** が stage1"
                 " の入力になります。"
             ),
         )
@@ -547,7 +547,7 @@ def _build_steps(rows, n, vin, code, raw):
                 kind="I",
                 edges=[f"d{k}"],
                 boxes=[f"s{k}"],
-                title=f"第{k}段：Sub-ADCが判定 → D{k}",
+                title=f"stage{k}：Sub-ADCが判定 → D{k}",
                 text=(
                     f"Sub-ADC が Vin = {r['vin']:.3f} V を しきい値 0.75 V /"
                     " 1.25 V と比較し、"
@@ -561,12 +561,12 @@ def _build_steps(rows, n, vin, code, raw):
                 kind="V",
                 edges=[f"v{k}"],
                 boxes=[f"s{k}", f"s{k+1}"],
-                title=f"第{k}段：DAC減算 → ×2 → 第{k+1}段へ",
+                title=f"stage{k}：DAC減算 → ×2 → stage{k+1}へ",
                 text=(
                     f"DAC が D{k} から **{r['vdac']:.3f} V** を作り、Σ で Vin −"
                     f" DAC = {r['vin']:.3f} − {r['vdac']:.3f} = {r['vsub']:.3f}"
                     " V（残差）。MDAC が ×2 して **Vres ="
-                    f" {r['vres']:.3f} V** を 第{k+1}段 へ渡します。"
+                    f" {r['vres']:.3f} V** を stage{k+1} へ渡します。"
                 ),
             )
         )
@@ -576,9 +576,9 @@ def _build_steps(rows, n, vin, code, raw):
             kind="I",
             edges=[f"d{n}"],
             boxes=[f"s{n}"],
-            title=f"第{n}段（最終段）：判定のみ",
+            title=f"stage{n}（最終stage）：判定のみ",
             text=(
-                f"最終段は Vin = {r['vin']:.3f} V をしきい値 0.5 V / 1.5 V"
+                f"最終stageは Vin = {r['vin']:.3f} V をしきい値 0.5 V / 1.5 V"
                 f" で判定して **D{n} = {r['d']}** を出すだけ。"
                 "MDACはありません。→ これで全ビットが出そろいました。"
             ),
@@ -591,7 +591,7 @@ def _build_steps(rows, n, vin, code, raw):
             boxes=[f"r{k}" for k in range(1, n + 1)],
             title="シフトレジスタで時間同期",
             text=(
-                "第k段のビットは k クロック目に確定済み。早く確定したビットほど長く待たせ（第k段は"
+                "stagekのビットは k クロック目に確定済み。早く確定したビットほど長く待たせ（stagekは"
                 " N−k クロック遅延）、全ビットを同じクロックに揃えます。"
             ),
         )
@@ -679,9 +679,9 @@ def draw_flow(n, rows, vin, code, raw, steps, idx):
             W,
             1.2,
             (
-                f"第{k}段\nサブADC+DAC\n->減算->2倍"
+                f"stage{k}\nサブADC+DAC\n->減算->2倍"
                 if not last
-                else f"第{k}段\nサブADCのみ"
+                else f"stage{k}\nサブADCのみ"
             ),
         )
         if not last:
@@ -734,7 +734,7 @@ def draw_flow(n, rows, vin, code, raw, steps, idx):
     return fig
 
 
-# ---------- ② 1段の中身（拡大） ----------
+# ---------- ② stage1の中身（拡大） ----------
 def draw_stage(k, r, sub):
     E = [
         (
@@ -861,7 +861,7 @@ def draw_stage(k, r, sub):
         )
         _arrow(ax, p, q, state, kind, lab, lp, head, fs=9)
     _legend(ax, "lower right")
-    ax.set_title(f"第 {k} 段の内部構造 (MDAC段)", fontsize=11)
+    ax.set_title(f"stage {k} の内部構造 (MDACstage)", fontsize=11)
     return fig
 
 
@@ -990,12 +990,12 @@ def draw_timing(n, ns=3):
     ax.set_ylim(0, rows_n)
     ax.set_yticks([rows_n - 0.5 - i for i in range(rows_n)])
     ax.set_yticklabels(
-        ["φ1", "φ2"] + [f"第{k}段" for k in range(1, n + 1)]
+        ["φ1", "φ2"] + [f"stage{k}" for k in range(1, n + 1)]
     )
     ax.set_xticks(range(T + 1))
     ax.set_xlabel("半クロック (フェーズ)")
     ax.set_title(
-        "2相動作: 第k段が増幅中に第k+1段がサンプリング", fontsize=11
+        "2相動作: stage k増幅中にstage k+1がサンプリング", fontsize=11
     )
     return fig
 
@@ -1044,8 +1044,8 @@ with tab1:
                 f"{'🔵' if s['kind'] == 'V' else '🔴'} **{j + 1}. {s['title']}**"
             )
     st.caption(
-        "ポイント：電圧（青）は左から右へ1段ずつ受け渡され、"
-        "情報（赤）は各段から下へ取り出されてシフトレジスタ → DEC → Dout へ集まります。"
+        "ポイント：電圧（青）は左から右へ1stageずつ受け渡され、"
+        "情報（赤）は各stageから下へ取り出されてシフトレジスタ → DEC → Dout へ集まります。"
     )
 
 with tab2:
@@ -1083,12 +1083,12 @@ with tab2:
         ),
         (
             f"アンプが×2 → **Vres = {r['vres']:.3f} V**。範囲が 0～Vref"
-            " に戻るので、次段が同じ回路で処理できます。"
+            " に戻るので、次stageが同じ回路で処理できます。"
         ),
     ]
     st.info(tx[si2])
     st.caption(
-        "1つの段の中で、電圧は「分岐 → 引き算 → 2倍」と流れ、情報は「比較 → D →"
+        "1つのstageの中で、電圧は「分岐 → 引き算 → 2倍」と流れ、情報は「比較 → D →"
         " DAC／シフトレジスタ」と流れます。"
     )
 
@@ -1129,7 +1129,7 @@ with tab3:
     st.caption(
         "電荷保存則がそのまま『引き算＋2倍』を実現します（Cs/Cf = 2、Vdac = D ×"
         " Vref/4）。"
-        "上の表示は第1段の値です。"
+        "上の表示はstage1の値です。"
     )
 
 with tab4:
@@ -1137,9 +1137,9 @@ with tab4:
     st.pyplot(figt)
     plt.close(figt)
     st.markdown(
-        "- 隣り合う段は**逆相**で動作します。第k段が増幅（amp）して出力を出す**ちょうどその期間**に、"
-        "第k+1段がその電圧をサンプル（sample）します。\n"
-        "- そのため各段は「サンプル → 増幅」を繰り返しながら、**別々のサンプル（A,B,C）を同時に**処理できます。\n"
+        "- 隣り合うstageは**逆相**で動作します。stage kが増幅（amp）して出力を出す**ちょうどその期間**に、"
+        "stage k+1がその電圧をサンプル（sample）します。\n"
+        "- そのため各stageは「サンプル → 増幅」を繰り返しながら、**別々のサンプル（A,B,C）を同時に**処理できます。\n"
         "- 上図は実回路の2相動作の様子です。"
     )
 
@@ -1152,18 +1152,18 @@ with tab5:
     with st.expander("1. 残差・残差増幅器 (MDAC)", expanded=True):
         st.markdown(
             "#### 概要と役割\n"
-            "各ステージ（段）で入力電圧を粗く量子化し、その判定結果に相当する電圧を引き算した**「残り（残差）」を抽出して2倍に増幅**し、次段へ渡す回路です。\n\n"
+            "各ステージ（stage）で入力電圧を粗く量子化し、その判定結果に相当する電圧を引き算した**「残り（残差）」を抽出して2倍に増幅**し、次stageへ渡す回路です。\n\n"
             "#### 電圧の流れと情報の流れ\n"
             "- **🔵 電圧の流れ**：\n"
             "  1. 入力電圧 $V_{in}$ がステージに入り、**2方向に分岐**します（サブADCと減算器 $\Sigma$）。\n"
             "  2. 減算器 $\Sigma$ でサブDACの出力電圧 $V_{dac}$ を引き算し、差分（$V_{in} - V_{dac}$）を作ります。\n"
-            "  3. 増幅器（×2）で差分を2倍に引き伸ばし、**残差電圧 $V_{res}$** として次段の入力へ受け渡します。\n"
+            "  3. 増幅器（×2）で差分を2倍に引き伸ばし、**残差電圧 $V_{res}$** として次stageの入力へ受け渡します。\n"
             "- **🔴 情報の流れ**：\n"
             "  1. サブADCが $V_{in}$ の範囲を比較判定し、**デジタル信号 $D$（0, 1, 2）を出力**します。\n"
-            "  2. この $D$ は、① 減算用電圧を決めるために**同段のサブDAC**へ向かう路線 と、② 変換結果として**シフトレジスタ**へ向かう路線 の2つに分岐します。\n\n"
+            "  2. この $D$ は、① 減算用電圧を決めるために**同stageのサブDAC**へ向かう路線 と、② 変換結果として**シフトレジスタ**へ向かう路線 の2つに分岐します。\n\n"
             "#### なぜ残差を2倍増幅するのか？\n"
             "減算後の残差電圧は元の電圧レンジ（$0 \sim V_{ref}$）の半分以下の狭い範囲に縮小してしまいます。"
-            "これをアンプで**2倍に拡大**して $0 \sim V_{ref}$ の範囲に戻すことで、**次段以降も全く同じ回路構造・同じ比較しきい値で処理を繰り返す**ことができるようになります。"
+            "これをアンプで**2倍に拡大**して $0 \sim V_{ref}$ の範囲に戻すことで、**次stage以降も全く同じ回路構造・同じ比較しきい値で処理を繰り返す**ことができるようになります。"
         )
 
     # --- 2. パイプライン処理 ---
@@ -1173,13 +1173,13 @@ with tab5:
             "全ステージが独立してアナログ電圧を保持（サンプリング）できる構造を利用し、工場のベルトコンベア（パイプライン）のように**複数のサンプルを同時に並列処理**する方式です。\n\n"
             "#### 電圧の流れと情報の流れ\n"
             "- **🔵 電圧の流れ**：\n"
-            "  クロックの切り替えに伴い、あるサンプル（例：サンプルA）の電圧が第1段 → 第2段 → 第3段 … と**バケツリレーのように順次右へ受け渡されていきます**。\n"
+            "  クロックの切り替えに伴い、あるサンプル（例：サンプルA）の電圧がstage1 → stege2 → stage3 … と**バケツリレーのように順次右へ受け渡されていきます**。\n"
             "- **🔴 情報の流れ**：\n"
             "  - サンプルAのデジタルビットは、1クロックごとに $D_1 \to D_2 \to D_3 \dots$ と時間差で順次確定します。\n"
-            "  - サンプルAが第2段に移った瞬間、第1段には**次のサンプルBの電圧**が入力され、新しい変換が始まります。\n\n"
+            "  - サンプルAがstage2に移った瞬間、stage1には**次のサンプルBの電圧**が入力され、新しい変換が始まります。\n\n"
             "#### 性能の原理（レイテンシとスループット）\n"
             "- **レイテンシ（変換遅延）**：1つのサンプルが入力されてから全ビットが揃うまでに **$N$ クロック** かかります。\n"
-            "- **スループット（処理速度）**：各段が同時に異なるサンプルを処理しているため、**毎クロック1つの変換結果を出力**できます。分解能を高めるために段数 $N$ を増やしても、増えるのはレイテンシ（遅延時間）だけであり、出力速度（スループット）は低下しません。"
+            "- **スループット（処理速度）**：各stageが同時に異なるサンプルを処理しているため、**毎クロック1つの変換結果を出力**できます。分解能を高めるためにstage数 $N$ を増やしても、増えるのはレイテンシ（遅延時間）だけであり、出力速度（スループット）は低下しません。"
         )
 
     # --- 3. 時差・誤差補正 (DEC) ---
@@ -1187,26 +1187,26 @@ with tab5:
         st.markdown(
             f"""
 #### 概要と役割
-各段のデジタル出力 $D_k$ は確定する時刻がバラバラです。DEC（Digital Error Correction）は、**シフトレジスタで確定時刻のズレを揃え（タイムアライメント）**、各段のビットを**1ビット重なりを持たせて加算**することで、Sub-ADC（比較器）のオフセット誤差をデジタル的に自動打ち消しする回路です。
+各stageのデジタル出力 $D_k$ は確定する時刻がバラバラです。DEC（Digital Error Correction）は、**シフトレジスタで確定時刻のズレを揃え（タイムアライメント）**、各stageのビットを**1ビット重なりを持たせて加算**することで、Sub-ADC（比較器）のオフセット誤差をデジタル的に自動打ち消しする回路です。
 
 #### 電圧の流れと情報の流れ
 - **🔵 電圧の流れ**：DEC内部にはアナログ電圧は**一切流れません**（完全なデジタル演算回路です）。
 - **🔴 情報の流れ**：
-  1. 第 $k$ 段で確定した $D_k$ がシフトレジスタに入り、$(N-k)$ クロック分遅延されて待機します。
-  2. 最終段（第 $N$ 段）の判定が終わったタイミングで全段の $D_k$ が同時にDECへ送られます。
+  1. stage $k$ で確定した $D_k$ がシフトレジスタに入り、$(N-k)$ クロック分遅延されて待機します。
+  2. 最終stage（stage $N$ ）の判定が終わったタイミングで全stageの $D_k$ が同時にDECへ送られます。
   3. 重み付け加算（1ビットずらし加算）が行われ、最終的なデジタル出力 $D_{out}$ に取り出されます。
 
 #### 現在のシミュレーション値による加算計算
 `{_lines} = {_raw}`
 
 #### なぜ誤差が自動的に打ち消されるのか？（補正の原理）
-1.5bit/段モデルでは、隣り合う段の重みに 1ビット分（2倍）の重なりを持たせています。
-- **正しく動作している場合**：第 $k$ 段の出力が $D_k$、第 $k+1$ 段の出力が $D_{k+1}$。
-- **比較器にズレがあり、第 $k$ 段で誤って $D_k$ が $+1$ 大きく判定された場合**：
-  - 第 $k$ 段のDAC出力が $1 \times V_{ref}/4$ だけ高くなり、引き算後の残差は $1 \times V_{ref}/4$ だけ小さくなります。
-  - 2倍増幅された次段への入力は $1 \times V_{ref}/2$ 小さくなるため、**次段の判定 $D_{k+1}$ が自然と $-2$ だけ小さく判定**されます。
-  - DECで重み付け加算すると、第 $k$ 段の重みは第 $k+1$ 段の **2倍** であるため：
+1.5bit/stageモデルでは、隣り合うstageの重みに 1ビット分（2倍）の重なりを持たせています。
+- **正しく動作している場合**：stage $k$ の出力が $D_k$、stage $k+1$ の出力が $D_{k+1}$。
+- **比較器にズレがあり、stage $k$ で誤って $D_k$ が $+1$ 大きく判定された場合**：
+  - stage $k$ のDAC出力が $1 \times V_{ref}/4$ だけ高くなり、引き算後の残差は $1 \times V_{ref}/4$ だけ小さくなります。
+  - 2倍増幅された次stageへの入力は $1 \times V_{ref}/2$ 小さくなるため、**次stageの判定 $D_{k+1}$ が自然と $-2$ だけ小さく判定**されます。
+  - DECで重み付け加算すると、stage $k$ の重みはstage $k+1$ の **2倍** であるため：
     $$\text{{補正による変化量}} = (+1 \times 2) + (-2 \times 1) = 0$$
-  - 結果として、**比較器の判定ミスが加算時に完全に相殺**され、正しい量子化コードが得られます。（※残差が次段の入力許容範囲を超えない限り有効です）
+  - 結果として、**比較器の判定ミスが加算時に完全に相殺**され、正しい量子化コードが得られます。（※残差が次stageの入力許容範囲を超えない限り有効です）
             """
         )
