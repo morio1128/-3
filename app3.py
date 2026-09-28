@@ -304,3 +304,326 @@ elif focus == KW[2]:
     view_pipe(vin, n)
 else:
     view_dec(vin, n)
+# ============================================================================
+# 【追加機能】電圧の流れ・情報の流れを、矢印でたどって理解する
+#   ※ 既存コードは変更していません。この下のブロックを app.py の末尾に追記します。
+# ============================================================================
+from matplotlib.patches import Circle, Polygon
+
+V_COL, I_COL, G_COL = "#1565c0", "#d84315", "#b0b8c0"  # 電圧=青 / 情報=赤 / 未通過=灰
+
+
+def _arrow(ax, p, q, state, kind, label=None, lpos=(0.0, 0.12), head=True, fs=8.5):
+    """state: future(未通過) / done(通過済) / active(いま流れている)"""
+    col = G_COL if state == "future" else (V_COL if kind == "V" else I_COL)
+    lw = {"future": 1.2, "done": 2.4, "active": 4.5}[state]
+    ax.annotate("", xy=q, xytext=p, arrowprops=dict(
+        arrowstyle="-|>" if head else "-", lw=lw, color=col, mutation_scale=14,
+        linestyle="--" if state == "future" else "-", shrinkA=0, shrinkB=0))
+    if label and state != "future":
+        ax.text((p[0] + q[0]) / 2 + lpos[0], (p[1] + q[1]) / 2 + lpos[1], label,
+                ha="center", va="bottom", fontsize=fs, color=col, fontweight="bold")
+
+
+def _first(steps):
+    first = {}
+    for i, s in enumerate(steps):
+        for e in s["edges"]:
+            first.setdefault(e, i)
+    return first
+
+
+def _state(eid, first, idx):
+    if eid not in first or first[eid] > idx:
+        return "future"
+    return "active" if first[eid] == idx else "done"
+
+
+def _legend(ax, loc="upper right"):
+    ax.plot([], [], c=V_COL, lw=3, label="Voltage (analog)")
+    ax.plot([], [], c=I_COL, lw=3, label="Information (digital)")
+    ax.plot([], [], c=G_COL, lw=1.5, ls="--", label="not yet")
+    ax.legend(loc=loc, fontsize=8, ncol=3, frameon=False)
+
+
+# ---------- ① 全体の流れ：ステップ定義 ----------
+def _build_steps(rows, n, vin, code, raw):
+    S = []
+    S.append(dict(kind="V", edges=["in"], boxes=["sh"], title="Vin → S/H",
+                  text=f"アナログ電圧 Vin = **{vin:.3f} V** が S/H に入り、クロックに合わせて**サンプリング**されます。"
+                       "電圧はキャパシタの電荷として保持されます。"))
+    S.append(dict(kind="V", edges=["sh_s1"], boxes=["sh", "s1"], title="S/H → Stage 1",
+                  text=f"保持された **{rows[0]['vin']:.3f} V** が Stage 1 の入力になります。"))
+    for k in range(1, n):
+        r = rows[k - 1]
+        S.append(dict(kind="I", edges=[f"d{k}"], boxes=[f"s{k}"], title=f"Stage {k}：Sub-ADCが判定 → D{k}",
+                      text=f"Sub-ADC が Vin = {r['vin']:.3f} V を しきい値 0.75 V / 1.25 V と比較し、"
+                           f"**D{k} = {r['d']}**（デジタル情報）を出力。この D{k} は ①DACへ ②シフトレジスタへ の2方向に流れます。"))
+        S.append(dict(kind="V", edges=[f"v{k}"], boxes=[f"s{k}", f"s{k+1}"],
+                      title=f"Stage {k}：DAC減算 → ×2 → Stage {k+1}へ",
+                      text=f"DAC が D{k} から **{r['vdac']:.3f} V** を作り、Σ で Vin − DAC = {r['vin']:.3f} − {r['vdac']:.3f} "
+                           f"= {r['vsub']:.3f} V（残差）。MDAC が ×2 して **Vres = {r['vres']:.3f} V** を Stage {k+1} へ渡します。"))
+    r = rows[n - 1]
+    S.append(dict(kind="I", edges=[f"d{n}"], boxes=[f"s{n}"], title=f"Stage {n}（最終段）：判定のみ",
+                  text=f"最終段は Vin = {r['vin']:.3f} V をしきい値 0.5 V / 1.5 V で判定して **D{n} = {r['d']}** を出すだけ。"
+                       "MDACはありません。→ これで全ビットが出そろいました。"))
+    S.append(dict(kind="I", edges=[f"r{k}" for k in range(1, n + 1)], boxes=[f"r{k}" for k in range(1, n + 1)],
+                  title="シフトレジスタで時差揃え",
+                  text="Stage k のビットは k クロック目に確定済み。早く確定したビットほど長く待たせ（Stage k は N−k クロック遅延）、"
+                       "全ビットを同じクロックに揃えます。"))
+    S.append(dict(kind="I", edges=["dec"], boxes=["dec"], title="DEC：1bitずらして加算",
+                  text="DEC が各Dを重み（2^(N-1-k)）付きで、**1bitずつ重ねて加算**します。"
+                       f"合計 = **{raw}**" + (f"（上限にクリップして {code}）" if raw != code else "") + "。"))
+    S.append(dict(kind="I", edges=["out"], boxes=["dec"], title="Dout 出力",
+                  text=f"最終出力 **Dout = {code:0{n}b}**（10進 {code}）。ここまでが1サンプル分の電圧・情報の旅です。"))
+    return S
+
+
+def draw_flow(n, rows, vin, code, raw, steps, idx):
+    first = _first(steps)
+    cur = set(steps[idx]["boxes"])
+    fig, ax = plt.subplots(figsize=(13, 4.6))
+    ax.axis("off")
+    W, G, X0 = 2.0, 0.4, 1.9
+    xe = X0 + n * (W + G)
+    ax.set_xlim(-0.8, xe + 3.4)
+    ax.set_ylim(-0.4, 4.6)
+
+    def box(bid, x, y, w, h, txt):
+        ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.03", lw=1.5, ec="#345",
+                                    fc="#ffd54f" if bid in cur else "#e3eaf2"))
+        ax.text(x + w / 2, y + h / 2, txt, ha="center", va="center", fontsize=9)
+
+    def edge(eid, p, q, kind, label=None, lpos=(0, 0.12), head=True):
+        _arrow(ax, p, q, _state(eid, first, idx), kind, label, lpos, head)
+
+    ax.text(-0.75, 3.15, "Vin", fontsize=11)
+    box("sh", 0.2, 2.4, 1.2, 1.2, "S/H")
+    edge("in", (-0.3, 3.0), (0.2, 3.0), "V")
+    edge("sh_s1", (1.4, 3.0), (X0, 3.0), "V", f"{rows[0]['vin']:.2f}V", (0, 0.1))
+    for k in range(1, n + 1):
+        r = rows[k - 1]
+        x = X0 + (k - 1) * (W + G)
+        last = k == n
+        box(f"s{k}", x, 2.4, W, 1.2,
+            f"Stage {k}\nSub-ADC+DAC\n->Sum->x2" if not last else f"Stage {k}\nSub-ADC only")
+        if not last:
+            edge(f"v{k}", (x + W, 3.0), (x + W + G, 3.0), "V", f"{r['vres']:.2f}V", (0, 0.1))
+        edge(f"d{k}", (x + W / 2, 2.4), (x + W / 2, 1.5), "I", f"D{k}={r['d']}", (0.45, -0.1))
+        box(f"r{k}", x + 0.1, 0.7, W - 0.2, 0.8, f"Shift Reg\n({n - k} CLK)")
+        edge(f"r{k}", (x + W / 2, 0.7), (x + W / 2, 0.3), "I", head=False)
+    edge("dec", (X0 + W / 2, 0.3), (xe + 0.3, 0.3), "I", f"sum={raw}", (0, 0.06))
+    box("dec", xe + 0.3, -0.1, 1.9, 1.2, "DEC\n(shift & add)")
+    edge("out", (xe + 2.2, 0.5), (xe + 2.7, 0.5), "I", f"Dout={code:0{n}b}", (0.45, 0.1))
+    _legend(ax)
+    ax.set_title(f"Signal flow: step {idx + 1} / {len(steps)}", fontsize=11)
+    return fig
+
+
+# ---------- ② 1段の中身（拡大） ----------
+def draw_stage(k, r, sub):
+    E = [  # id, 始点, 終点, 種類, ラベル, ラベル位置補正, 矢じり, 何ステップ目で流れるか
+        ("in", (0.2, 2.0), (1.0, 2.0), "V", f"Vin={r['vin']:.3f}V", (0.2, 0.1), False, 0),
+        ("br", (1.0, 2.0), (1.0, 3.7), "V", None, (0, 0), False, 0),
+        ("sum_in", (1.0, 2.0), (5.4, 2.0), "V", "Vin (+)", (0, 0.1), True, 0),
+        ("cmp", (1.0, 3.7), (1.6, 3.7), "V", None, (0, 0), True, 1),
+        ("d_out", (2.7, 4.2), (2.7, 4.9), "I", f"D{k}={r['d']} -> Shift Reg", (1.3, -0.1), True, 1),
+        ("d_dac", (3.8, 3.7), (5.0, 3.7), "I", f"D={r['d']}", (0, 0.1), True, 2),
+        ("dac_out", (5.8, 3.2), (5.8, 2.4), "V", f"DAC={r['vdac']:.2f}V (-)", (1.0, -0.1), True, 2),
+        ("sum_amp", (6.15, 2.0), (7.2, 2.0), "V", f"{r['vsub']:.3f}V", (0, 0.1), True, 3),
+        ("amp_out", (8.4, 2.0), (9.7, 2.0), "V", f"Vres={r['vres']:.3f}V", (0, 0.1), True, 4),
+    ]
+    first = {e[0]: e[7] for e in E}
+    act = {1: "sadc", 2: "dac", 3: "sum", 4: "amp"}.get(sub)
+    fig, ax = plt.subplots(figsize=(11, 4.2))
+    ax.axis("off")
+    ax.set_xlim(0, 10.2)
+    ax.set_ylim(0.8, 5.3)
+    fc = lambda b: "#ffd54f" if act == b else "#e3eaf2"
+    ax.add_patch(FancyBboxPatch((1.6, 3.2), 2.2, 1.0, boxstyle="round,pad=0.03", fc=fc("sadc"), ec="#345", lw=1.5))
+    ax.text(2.7, 3.7, "Sub-ADC\n(2 comparators)", ha="center", va="center", fontsize=9)
+    ax.add_patch(FancyBboxPatch((5.0, 3.2), 1.6, 1.0, boxstyle="round,pad=0.03", fc=fc("dac"), ec="#345", lw=1.5))
+    ax.text(5.8, 3.7, "DAC", ha="center", va="center", fontsize=10)
+    ax.add_patch(Circle((5.8, 2.0), 0.35, fc=fc("sum"), ec="#345", lw=1.5))
+    ax.text(5.8, 2.0, "Σ", ha="center", va="center", fontsize=13)
+    ax.add_patch(Polygon([(7.2, 1.3), (7.2, 2.7), (8.4, 2.0)], fc=fc("amp"), ec="#345", lw=1.5))
+    ax.text(7.55, 2.0, "x2", ha="center", va="center", fontsize=11)
+    for eid, p, q, kind, lab, lp, head, st_no in E:
+        state = "future" if first[eid] > sub else ("active" if first[eid] == sub else "done")
+        _arrow(ax, p, q, state, kind, lab, lp, head, fs=9)
+    _legend(ax, "lower right")
+    ax.set_title(f"Inside Stage {k}  (MDAC stage)", fontsize=11)
+    return fig
+
+
+# ---------- ③ スイッチトキャパシタMDAC ----------
+def draw_sc(phase):
+    p1, p2 = phase == 1, phase == 2
+    fig, ax = plt.subplots(figsize=(10, 4.4))
+    ax.axis("off")
+    ax.set_xlim(-0.3, 9.2)
+    ax.set_ylim(0.9, 5.4)
+
+    def wire(pts, active):
+        ax.plot([p[0] for p in pts], [p[1] for p in pts], c=V_COL if active else G_COL,
+                lw=3.5 if active else 1.5, solid_capstyle="round")
+
+    ax.text(-0.25, 3.2, "Vin", fontsize=11)
+    ax.text(-0.25, 1.8, "Vdac", fontsize=11)
+    wire([(0.4, 3.2), (1.0, 3.2)], p1)
+    wire([(1.8, 3.2), (2.4, 3.2), (2.4, 2.5)], p1)
+    wire([(0.4, 1.8), (1.0, 1.8)], p2)
+    wire([(1.8, 1.8), (2.4, 1.8), (2.4, 2.5)], p2)
+    for y, name, on in ((3.2, "S1 (phi1)", p1), (1.8, "S2 (phi2)", p2)):
+        ax.add_patch(FancyBboxPatch((1.0, y - 0.35), 0.8, 0.7, boxstyle="round,pad=0.02",
+                                    fc="#a5d6a7" if on else "#eceff1", ec="#345"))
+        ax.text(1.4, y, name + ("\nON" if on else "\nOFF"), ha="center", va="center", fontsize=7)
+    wire([(2.4, 2.5), (3.0, 2.5)], True)
+    for x in (3.0, 3.3):
+        ax.plot([x, x], [2.1, 2.9], c="#345", lw=3)
+    wire([(3.3, 2.5), (4.2, 2.5), (4.2, 2.9), (4.6, 2.9)], True)
+    ax.add_patch(Polygon([(4.6, 1.7), (4.6, 3.3), (6.6, 2.5)], fc="#e3eaf2", ec="#345", lw=1.5))
+    ax.text(4.72, 2.83, "-", fontsize=12)
+    ax.text(4.72, 2.05, "+", fontsize=12)
+    ax.plot([4.6, 4.2], [2.1, 2.1], c="#345", lw=1.5)
+    ax.text(3.75, 2.0, "GND", fontsize=8)
+    wire([(4.2, 2.9), (4.2, 4.0)], p2)
+    for y in (4.0, 4.25):
+        ax.plot([3.9, 4.5], [y, y], c="#345", lw=3)
+    wire([(4.2, 4.25), (4.2, 4.9), (7.4, 4.9), (7.4, 2.5)], p2)
+    wire([(6.6, 2.5), (8.6, 2.5)], p2)
+    ax.text(8.7, 2.45, "Vout", fontsize=11)
+    ax.text(3.15, 3.05, "Cs", ha="center", fontsize=10)
+    ax.text(4.75, 4.05, "Cf", fontsize=10)
+    ax.text(3.0, 3.5, "X: virtual GND", fontsize=8)
+    if p1:
+        ax.text(5.0, 4.4, "Cf is reset (discharged)", fontsize=8)
+    ax.set_title("Switched-capacitor MDAC  -  " + ("phi1: sample" if p1 else "phi2: amplify"), fontsize=11)
+    return fig
+
+
+# ---------- ④ 2相クロックとパイプライン ----------
+def draw_timing(n, ns=3):
+    names, cols = ["A", "B", "C"], ["#90caf9", "#a5d6a7", "#ffcc80"]
+    T = n + 2 * (ns - 1) + 1
+    rows_n = n + 2
+    fig, ax = plt.subplots(figsize=(12, 0.55 * rows_n + 1.2))
+    for h in range(T):
+        for i, on in enumerate((h % 2 == 0, h % 2 == 1)):
+            if on:
+                ax.add_patch(plt.Rectangle((h, rows_n - 1 - i + 0.15), 1, 0.7, fc="#cfd8dc", ec="#345"))
+    for k in range(1, n + 1):
+        y = rows_n - 1 - (k + 1)
+        for s in range(ns):
+            for j, tag in ((k - 1 + 2 * s, "sample"), (k + 2 * s, "amp")):
+                ax.add_patch(plt.Rectangle((j, y + 0.1), 1, 0.8, fc=cols[s], ec="#345",
+                                           hatch="" if tag == "sample" else "//"))
+                ax.text(j + 0.5, y + 0.5, f"{names[s]}\n{tag}", ha="center", va="center", fontsize=7)
+    ax.set_xlim(0, T)
+    ax.set_ylim(0, rows_n)
+    ax.set_yticks([rows_n - 0.5 - i for i in range(rows_n)])
+    ax.set_yticklabels(["phi1", "phi2"] + [f"Stage {k}" for k in range(1, n + 1)])
+    ax.set_xticks(range(T + 1))
+    ax.set_xlabel("half clock (phase)")
+    ax.set_title("Two-phase operation: stage k amplifies while stage k+1 samples", fontsize=11)
+    return fig
+
+
+# ============================ 追加UI ============================
+st.divider()
+st.header("🔍 信号の流れをたどる（電圧の流れ・情報の流れ）")
+st.caption("矢印を1本ずつたどりながら、**電圧（アナログ）＝青**と**情報（デジタル）＝赤**が"
+           "どの順番で流れるかを確認できます。上のサイドバーの Vin / N がそのまま反映されます。")
+
+_rw, _cd, _raw = run_adc(vin, n)
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["🧭 全体の流れ（矢印）", "🔬 1段の中身", "⚡ MDACの電気の動き", "⏱ 2相クロックとパイプライン", "📝 キーワード別の解説"])
+
+with tab1:
+    steps = _build_steps(_rw, n, vin, _cd, _raw)
+    i = st.slider("ステップ（矢印を1本ずつたどる）", 1, len(steps), 1, key="flow_step") - 1
+    figf = draw_flow(n, _rw, vin, _cd, _raw, steps, i)
+    st.pyplot(figf)
+    plt.close(figf)
+    icon = "🔵 電圧（アナログ）の流れ" if steps[i]["kind"] == "V" else "🔴 情報（デジタル）の流れ"
+    st.info(f"**Step {i + 1}：{steps[i]['title']}**　（{icon}）\n\n{steps[i]['text']}")
+    with st.expander("全ステップの一覧（電圧と情報の遷移順）"):
+        for j, s in enumerate(steps):
+            st.markdown(f"{'🔵' if s['kind'] == 'V' else '🔴'} **{j + 1}. {s['title']}**")
+    st.caption("ポイント：電圧（青）は左から右へ1段ずつ受け渡され、"
+               "情報（赤）は各段から下へ取り出されてシフトレジスタ → DEC → Dout へ集まります。")
+
+with tab2:
+    c1, c2 = st.columns(2)
+    kk = c1.slider("拡大するステージ", 1, n - 1, 1, key="zoom_k")
+    subs = ["① Vinが2方向へ分岐", "② Sub-ADC判定", "③ DACが電圧を生成", "④ Σで減算", "⑤ ×2アンプで残差増幅"]
+    sname = c2.radio("流れの段階", subs, key="zoom_sub")
+    si2 = subs.index(sname)
+    r = _rw[kk - 1]
+    figs = draw_stage(kk, r, si2)
+    st.pyplot(figs)
+    plt.close(figs)
+    tx = [
+        f"入力 **{r['vin']:.3f} V** が、①Sub-ADC へ向かう枝と ②Σ の＋入力へ向かう枝に**分岐**します（電圧は同じ）。",
+        f"Sub-ADC の2個の比較器が 0.75 V / 1.25 V と比較 → **D{kk} = {r['d']}**。ここからデジタル情報（赤）が生まれます。",
+        f"D{kk} = {r['d']} に応じて DAC が **{r['vdac']:.3f} V**（= D × Vref/4）を出力。デジタル→アナログへ戻る点です。",
+        f"Σ で **{r['vin']:.3f} − {r['vdac']:.3f} = {r['vsub']:.3f} V**。粗い判定で表せた分を引き、細かい残りだけ（残差）にします。",
+        f"アンプが×2 → **Vres = {r['vres']:.3f} V**。範囲が 0～Vref に戻るので、次段が同じ回路で処理できます。",
+    ]
+    st.info(tx[si2])
+    st.caption("1つの段の中で、電圧は「分岐 → 引き算 → 2倍」と流れ、情報は「比較 → D → DAC／シフトレジスタ」と流れます。")
+
+with tab3:
+    ph = st.radio("クロック相", ["φ1：サンプル期間", "φ2：増幅期間"], horizontal=True, key="sc_phase")
+    pn = 1 if ph.startswith("φ1") else 2
+    figc = draw_sc(pn)
+    st.pyplot(figc)
+    plt.close(figc)
+    r1 = _rw[0]
+    cs, cf = 2.0, 1.0  # Cs/Cf = 2 → 利得2
+    if pn == 1:
+        st.info(f"**φ1**：S1がON。Cs の下側に Vin = {r1['vin']:.3f} V が加わり、Cs に電荷 "
+                f"**Q = Cs × Vin = {cs * r1['vin']:.3f}**（Cf=1 に規格化）が蓄えられます。Cf は放電（リセット）。"
+                "この時点で入力電圧が『電荷』として保持されます（＝S/H動作）。")
+    else:
+        st.info(f"**φ2**：S1がOFF、S2がON。Cs の下側が Vdac = {r1['vdac']:.3f} V に切り替わります。"
+                f"Cs に残せる電荷は Cs × Vdac = {cs * r1['vdac']:.3f}。差の **{cs * (r1['vin'] - r1['vdac']):.3f}** が"
+                f"オペアンプを通って Cf に移り、**Vout = {r1['vres']:.3f} V** になります。")
+    st.latex(r"C_s V_{in} = C_s V_{dac} + C_f V_{out} \;\Rightarrow\; V_{out}=\frac{C_s}{C_f}\,(V_{in}-V_{dac}) = 2\,(V_{in}-V_{dac})")
+    st.caption("電荷保存則がそのまま『引き算＋2倍』を実現します（Cs/Cf = 2、Vdac = D × Vref/4）。"
+               "上の表示は Stage 1 の値です。")
+
+with tab4:
+    figt = draw_timing(n)
+    st.pyplot(figt)
+    plt.close(figt)
+    st.markdown(
+        "- 隣り合う段は**逆相**で動作します。Stage k が増幅（amp）して出力を出す**ちょうどその期間**に、"
+        "Stage k+1 がその電圧をサンプル（sample）します。\n"
+        "- そのため各段は「サンプル → 増幅」を繰り返しながら、**別々のサンプル（A,B,C）を同時に**処理できます。\n"
+        "- 上図は実回路の2相動作の様子です。前の『パイプライン処理』の表は、各段にS/Hがある教科書的モデル"
+        "（1段＝1クロック）で表しており、考え方は同じです。")
+
+with tab5:
+    _lines = " + ".join(f"{r['d']}×{weight(r['stage'], n)}" for r in _rw)
+    with st.expander("1. 残差・MDAC ― 電圧の流れ", expanded=(focus == KW[1])):
+        st.markdown(
+            "**電圧の流れ**：Vin → 分岐 → ①Sub-ADC ②Σ(＋) ／ DAC電圧 → Σ(−) → 残差 → ×2 → Vres → 次段\n\n"
+            "**情報の流れ**：Sub-ADC → D(0,1,2) → ①DAC（電圧を選ぶ）②シフトレジスタ（記録）\n\n"
+            "**なぜ2倍？**：残差は 0～Vref/2 と狭くなっています。2倍で 0～Vref に戻せば、"
+            "次段も全く同じ回路・同じしきい値で判定できます。")
+    with st.expander("2. パイプライン処理 ― 各段が別サンプルを保持", expanded=(focus == KW[2])):
+        st.markdown(
+            "**電圧の流れ**：各段のアナログ出力（Vres）が次段のサンプル用キャパシタへ渡ります。"
+            "各段には**別のサンプルの電圧**が保持されています。\n\n"
+            "**情報の流れ**：サンプルAの D1, D2, … は1クロックずつ遅れて確定します。"
+            "その間に後続のサンプルB, C も別の段で処理されています。\n\n"
+            "**結果**：スループット＝毎クロック1サンプル、レイテンシ＝Nクロック。（『2相クロックとパイプライン』タブ参照）")
+    with st.expander("3. 時差・誤差補正 (DEC) ― デジタル情報だけが流れる", expanded=(focus == KW[3])):
+        st.markdown(
+            "**情報の流れ**：D_k（2bit）は Stage k が確定した時刻に出て、**電圧は関与しません**。"
+            "シフトレジスタ（Dフリップフロップ）を N−k クロック通り、加算器で合流します。\n\n"
+            f"**現在の値での加算**：`{_lines} = {_raw}`（重みは2の冪。最下位2段は同じ重み）\n\n"
+            "**なぜ誤差補正になる？**：段kの比較器が1段階誤って D_k が +1 大きくなると、残差は −1 V 小さくなり、"
+            "次段の D_{k+1} が −2 になります。D_k の重みは D_{k+1} の2倍なので、加算すると "
+            "**+1×2 − 2×1 = 0** で誤りが打ち消されます。ただし残差が 0～Vref を超えると打ち消せません。")
