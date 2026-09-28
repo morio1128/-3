@@ -1,7 +1,8 @@
-# app.py ― パイプライン型ADC 学習アプリ（Streamlit）
+# app.py の冒頭
 import matplotlib
 
 matplotlib.use("Agg")
+import japanize_matplotlib  # ← この行を追加（グラフの日本語文字化け防止）
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
