@@ -1011,7 +1011,7 @@ st.caption(
 _rw, _cd, _raw = run_adc(vin, n)
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🧭 全体の流れ（矢印）",
-    "🔬 第1段の中身",
+    "🔬 stegeの中身",
     "⚡ MDACの電気的動作",
     "⏱ 2相クロックとパイプライン",
     "📝 3大要素の詳細解説",
